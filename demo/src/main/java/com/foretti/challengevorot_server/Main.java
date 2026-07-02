@@ -2,6 +2,7 @@ package com.foretti.challengevorot_server;
 
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerOptions;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.pgclient.PgConnectOptions;
@@ -30,7 +31,11 @@ public class Main {
         wsManager.startListening();
 
         // 5. Запускаем сервер
-        HttpServer server = vertx.createHttpServer();
+HttpServerOptions options = new HttpServerOptions()
+    .setMaxWebSocketFrameSize(10 * 1024 * 1024); // 10 MB
+
+HttpServer server = vertx.createHttpServer(options);
+
 
         server.requestHandler(request -> {
             // Если это WebSocket — пропускаем, обрабатывается отдельно
@@ -62,7 +67,7 @@ public class Main {
             .setHost("localhost")
             .setDatabase("ChallengeVorot")
             .setUser("postgres")
-            .setPassword("password");
+            .setPassword("postgres");
 
         PoolOptions poolOptions = new PoolOptions().setMaxSize(10);
         pool = Pool.pool(vertx, connectOptions, poolOptions);

@@ -12,41 +12,86 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- Используйте последнюю версию для Core и Web -->
         <vertx.version>5.1.0</vertx.version>
     </properties>
 
-
-
     <dependencies>
-    
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-core</artifactId>
+            <version>4.5.0</version>
+        </dependency>
 
-    <dependency>
-        <groupId>io.vertx</groupId>
-        <artifactId>vertx-core</artifactId>
-        <version>4.5.0</version>
-    </dependency>
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-web</artifactId>
+            <version>4.5.0</version>
+        </dependency>
 
-    <!-- Vert.x Web (для WebSocket) -->
-    <dependency>
-        <groupId>io.vertx</groupId>
-        <artifactId>vertx-web</artifactId>
-        <version>4.5.0</version>
-    </dependency>
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-pg-client</artifactId>
+            <version>4.5.0</version>
+        </dependency>
 
-    <!-- PostgreSQL клиент (ОСНОВНАЯ) -->
-    <dependency>
-        <groupId>io.vertx</groupId>
-        <artifactId>vertx-pg-client</artifactId>
-        <version>4.5.0</version>
-    </dependency>
-
-    <!-- Логирование (чтобы видеть ошибки) -->
-    <dependency>
-        <groupId>org.slf4j</groupId>
-        <artifactId>slf4j-simple</artifactId>
-        <version>2.0.9</version>
-    </dependency>
-
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.9</version>
+        </dependency>
+        <dependency>
+    <groupId>com.ongres.scram</groupId>
+    <artifactId>client</artifactId>
+    <version>2.1</version>
+</dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Shade Plugin для создания "толстого" JAR -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.foretti.challengevorot_server.Main</mainClass>
+                                </transformer>
+                            </transformers>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Плагин для деплоя -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>wagon-maven-plugin</artifactId>
+                <version>2.0.2</version>
+                <executions>
+                    <execution>
+                        <id>upload-jar</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>upload</goal>
+                        </goals>
+                        <configuration>
+                            <fromDir>${project.build.directory}</fromDir>
+                            <includes>*.jar</includes>
+                            <toDir>/root</toDir>
+                            <url>scp://root@185.254.158.107</url>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

@@ -45,6 +45,7 @@ public class WebSocketManager {
 
         ws.closeHandler(v -> {
             System.out.println("🔌 Клиент отключился");
+            sessions.remove(wsToUserId.get(ws));
         });
     }
 
@@ -88,20 +89,20 @@ public class WebSocketManager {
 
             JsonObject notificationJson = new JsonObject(payload);
             notificationTypeHandler(notificationJson);
-            
 
         } catch (Exception e) {
             System.err.println("❌ Ошибка обработки уведомления: " + e.getMessage());
             e.printStackTrace();
         }
     }
+
     private void notificationTypeHandler(JsonObject notificationJson) {
         String type = notificationJson.getString("type");
         switch (type) {
             case "user_update":
                 handleGetUser(sessions.get(notificationJson.getString("user_id")));
                 break;
-            
+
         }
     }
 
@@ -116,6 +117,20 @@ public class WebSocketManager {
                 break;
             case "get_rooms":
                 handleGetRooms(ws);
+                break;
+            case "set_name":
+                String new_name = json.getString("name");
+                handleSetName(ws, new_name);
+                break;
+            case "set_avatar":
+                String new_avatar = json.getString("base64");
+                handleSetAvatar(ws, new_avatar);
+                break;
+            case "get_users":
+                handleGetUsers(ws);
+                break;
+            case "get_rotation_status":
+                handleGetRotationStatus(ws);
                 break;
             default:
                 ws.writeTextMessage(new JsonObject()
@@ -249,6 +264,125 @@ public class WebSocketManager {
                     err.printStackTrace();
                 });
 
+    }
+
+    private void handleSetName(ServerWebSocket ws, String new_name) {
+        String user_id = wsToUserId.get(ws);
+
+        if (user_id == null) {
+            ws.writeTextMessage(new JsonObject()
+                    .put("error", "User id is null")
+                    .encode());
+            return;
+        }
+
+        System.out.println("📥 Запрос на смену ника от: " + user_id);
+
+        pool.preparedQuery(
+                "UPDATE users SET username = $2 WHERE user_id = $1")
+                .execute(Tuple.of(user_id, new_name))
+                .onSuccess(rows -> {
+
+                })
+                .onFailure(err -> {
+                    err.printStackTrace();
+                });
+    }
+
+    private void handleSetAvatar(ServerWebSocket ws, String new_avatar) {
+        String user_id = wsToUserId.get(ws);
+
+        if (user_id == null) {
+            ws.writeTextMessage(new JsonObject()
+                    .put("error", "User id is null")
+                    .encode());
+            return;
+        }
+
+        System.out.println("📥 Запрос на смену аватара от: " + user_id);
+
+        pool.preparedQuery(
+                "UPDATE users SET avatar = $2 WHERE user_id = $1")
+                .execute(Tuple.of(user_id, new_avatar))
+                .onSuccess(rows -> {
+
+                })
+                .onFailure(err -> {
+                    err.printStackTrace();
+                });
+    }
+
+    private void handleGetUsers(ServerWebSocket ws) {
+        String user_id = wsToUserId.get(ws);
+
+        if (user_id == null) {
+            ws.writeTextMessage(new JsonObject()
+                    .put("error", "User id is null")
+                    .encode());
+            return;
+        }
+
+        System.out.println("📥 Запрос данных пользователей от: " + user_id);
+
+        pool.preparedQuery(
+                "SELECT username, avatar, genre," +
+                        " game, game_status, user_id," +
+                        " ask_to, readiness FROM users WHERE room IN" +
+                        " (SELECT room FROM users WHERE user_id = $1);")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    JsonArray users = new JsonArray();
+                    for (Row row : rows) {
+                        JsonObject user = new JsonObject()
+                                .put("username", row.getString("username"))
+                                .put("avatar", row.getString("avatar"))
+                                .put("genre", row.getString("genre"))
+                                .put("game", row.getString("game"))
+                                .put("game_status", row.getString("game_status"))
+                                .put("user_id", row.getString("user_id"))
+                                .put("ask_to", row.getString("ask_to"))
+                                .put("readiness", row.getBoolean("readiness"));
+                        users.add(user);
+                    }
+                    sendToUser(user_id, new JsonObject()
+                            .put("type", "users_list")
+                            .put("users", users));
+                })
+                .onFailure(err -> {
+
+                });
+    }
+
+    private void handleGetRotationStatus(ServerWebSocket ws) {
+        String user_id = wsToUserId.get(ws);
+
+        if (user_id == null) {
+            ws.writeTextMessage(new JsonObject()
+                    .put("error", "User id is null")
+                    .encode());
+            return;
+        }
+
+        System.out.println("📥 Запрос данных статуса ротации: " + user_id);
+
+        pool.preparedQuery(
+                "SELECT rotation_status FROM rooms WHERE name IN (SELECT room FROM users WHERE user_id = $1);")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    Row row = rows.iterator().next();
+
+                    JsonObject roomData = new JsonObject()
+                            .put("type", "room_update")
+                            .put("rotation_status", row.getBoolean("rotation_status"));
+
+                    sendToUser(user_id, roomData);
+                })
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка БД: " + err.getMessage());
+                    ws.writeTextMessage(new JsonObject()
+                            .put("error", "Database error")
+                            .encode());
+                });
     }
 
     public void sendToUser(String userId, JsonObject message) {
