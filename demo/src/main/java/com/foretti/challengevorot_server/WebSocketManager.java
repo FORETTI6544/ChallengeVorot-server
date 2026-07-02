@@ -10,21 +10,19 @@ import io.vertx.sqlclient.Pool;
 import io.vertx.sqlclient.Row;
 import io.vertx.pgclient.PgConnection;
 import io.vertx.pgclient.PgNotification;
-import io.vertx.sqlclient.SqlConnection;
 import io.vertx.sqlclient.Tuple;
 
 public class WebSocketManager {
     private final Pool pool;
+    public final SteamGameSearcher gameSearcher;
 
-    // ✅ Храним сессии: userId → WebSocket
     private final Map<String, ServerWebSocket> sessions = new ConcurrentHashMap<>();
     private final Map<ServerWebSocket, String> wsToUserId = new ConcurrentHashMap<>();
-
-    // ✅ Храним WebSocket'ы, которые ещё не прислали auth
     private final Map<ServerWebSocket, Boolean> pendingAuth = new ConcurrentHashMap<>();
 
-    public WebSocketManager(Pool pool) {
+    public WebSocketManager(Pool pool, SteamGameSearcher gameSearcher) {
         this.pool = pool;
+        this.gameSearcher = gameSearcher;
     }
 
     public void handle(ServerWebSocket ws) {
@@ -131,6 +129,9 @@ public class WebSocketManager {
                 break;
             case "get_rotation_status":
                 handleGetRotationStatus(ws);
+                break;
+            case "search_games":
+                handleSearchGames(ws, json);
                 break;
             default:
                 ws.writeTextMessage(new JsonObject()
@@ -383,6 +384,41 @@ public class WebSocketManager {
                             .put("error", "Database error")
                             .encode());
                 });
+    }
+
+    private void handleSearchGames(ServerWebSocket ws, JsonObject json) {
+        String user_id = wsToUserId.get(ws);
+        String query = json.getString("query");
+
+        if (user_id == null) {
+            ws.writeTextMessage(new JsonObject()
+                    .put("error", "User id is null")
+                    .encode());
+            return;
+        }
+
+        System.out.println("📥 Запрос на поиск игры от пользователя: " + user_id);
+
+        pool.preparedQuery(
+                "SELECT app_id, game_name FROM steam_games WHERE LOWER(game_name) LIKE LOWER('%' || $1 || '%') LIMIT 50")
+                .execute(Tuple.of(query))
+                .onSuccess(rows -> {
+                    JsonArray games = new JsonArray();
+                    for (Row row : rows) {
+                        JsonObject game = new JsonObject()
+                                .put("preview_image", "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/" + row.getInteger("app_id") + "/header.jpg")
+                                .put("app_id", row.getInteger("app_id"))
+                                .put("name", row.getString("game_name"));
+                        games.add(game);
+                    }
+                    sendToUser(user_id, new JsonObject()
+                            .put("type", "game_search_result")
+                            .put("games", games));
+                })
+                .onFailure(err -> {
+
+                });
+
     }
 
     public void sendToUser(String userId, JsonObject message) {

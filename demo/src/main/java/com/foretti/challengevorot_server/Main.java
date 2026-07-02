@@ -10,8 +10,8 @@ import io.vertx.sqlclient.Pool;
 import io.vertx.sqlclient.PoolOptions;
 
 public class Main {
-    private static Pool pool;
 
+    private static Pool pool;
     public static void main(String[] args) {
         Vertx vertx = Vertx.vertx();
 
@@ -27,15 +27,18 @@ public class Main {
         router.post("/posts/login").handler(auth::login);
 
         // 4. Настраиваем WebSocket
-        WebSocketManager wsManager = new WebSocketManager(pool);
+
+        // Создаем SteamGameSearcher
+        SteamGameSearcher searcher = new SteamGameSearcher(vertx, pool);
+
+        WebSocketManager wsManager = new WebSocketManager(pool, searcher);
         wsManager.startListening();
 
         // 5. Запускаем сервер
-HttpServerOptions options = new HttpServerOptions()
-    .setMaxWebSocketFrameSize(10 * 1024 * 1024); // 10 MB
+        HttpServerOptions options = new HttpServerOptions()
+                .setMaxWebSocketFrameSize(10 * 1024 * 1024);
 
-HttpServer server = vertx.createHttpServer(options);
-
+        HttpServer server = vertx.createHttpServer(options);
 
         server.requestHandler(request -> {
             // Если это WebSocket — пропускаем, обрабатывается отдельно
@@ -63,11 +66,11 @@ HttpServer server = vertx.createHttpServer(options);
 
     private static void connectToDatabase(Vertx vertx) {
         PgConnectOptions connectOptions = new PgConnectOptions()
-            .setPort(5432)
-            .setHost("localhost")
-            .setDatabase("ChallengeVorot")
-            .setUser("postgres")
-            .setPassword("postgres");
+                .setPort(5432)
+                .setHost("localhost")
+                .setDatabase("ChallengeVorot")
+                .setUser("postgres")
+                .setPassword("postgres");
 
         PoolOptions poolOptions = new PoolOptions().setMaxSize(10);
         pool = Pool.pool(vertx, connectOptions, poolOptions);

@@ -17,7 +17,7 @@ public class Auth {
 
     // 📝 POST /posts/register
     public void register(RoutingContext ctx) {
-        JsonObject body = ctx.getBodyAsJson();
+        JsonObject body = ctx.body().asJsonObject();
 
         // Проверяем поля
         if (body == null || !body.containsKey("username") || !body.containsKey("email") || !body.containsKey("password")) {
@@ -68,7 +68,7 @@ public class Auth {
 
     // 🔑 POST /posts/login
     public void login(RoutingContext ctx) {
-        JsonObject body = ctx.getBodyAsJson();
+        JsonObject body = ctx.body().asJsonObject();
 
         if (body == null || !body.containsKey("user") || !body.containsKey("password")) {
             sendError(ctx, 400, "Missing fields: user, password");
@@ -122,9 +122,5 @@ public class Auth {
         } catch (Exception e) {
             throw new RuntimeException("Hash error", e);
         }
-    }
-
-    private boolean verifyPassword(String plain, String hashed) {
-        return hashPassword(plain).equals(hashed);
     }
 }
