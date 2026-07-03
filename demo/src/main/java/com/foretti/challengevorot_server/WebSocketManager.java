@@ -133,6 +133,12 @@ public class WebSocketManager {
             case "search_games":
                 handleSearchGames(ws, json);
                 break;
+            case "get_genres":
+                handleGetGenres(ws);
+                break;
+            case "spin_wheel":
+                handleSpinWheel(ws);
+                break;
             default:
                 ws.writeTextMessage(new JsonObject()
                         .put("error", "Unknown message type: " + type)
@@ -406,7 +412,9 @@ public class WebSocketManager {
                     JsonArray games = new JsonArray();
                     for (Row row : rows) {
                         JsonObject game = new JsonObject()
-                                .put("preview_image", "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/" + row.getInteger("app_id") + "/header.jpg")
+                                .put("preview_image",
+                                        "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/"
+                                                + row.getInteger("app_id") + "/header.jpg")
                                 .put("app_id", row.getInteger("app_id"))
                                 .put("name", row.getString("game_name"));
                         games.add(game);
@@ -414,6 +422,82 @@ public class WebSocketManager {
                     sendToUser(user_id, new JsonObject()
                             .put("type", "game_search_result")
                             .put("games", games));
+                })
+                .onFailure(err -> {
+
+                });
+
+    }
+
+    private void handleGetGenres(ServerWebSocket ws) {
+        String user_id = wsToUserId.get(ws);
+
+        if (user_id == null) {
+            ws.writeTextMessage(new JsonObject()
+                    .put("error", "User id is null")
+                    .encode());
+            return;
+        }
+
+        System.out.println("📥 Запрос жанров от: " + user_id);
+
+        pool.preparedQuery(
+                "SELECT genre FROM genres WHERE type IN (SELECT current_rotation_type FROM rooms WHERE name IN (SELECT room FROM users WHERE user_id = $1));")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    JsonArray genres = new JsonArray();
+                    for (Row row : rows) {
+                        JsonObject genre = new JsonObject()
+                                .put("genre", row.getValue("genre"));
+
+                        genres.add(genre);
+                    }
+                    sendToUser(user_id, new JsonObject()
+                            .put("type", "genres_list")
+                            .put("genres", genres));
+                })
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка БД: " + err.getMessage());
+                    ws.writeTextMessage(new JsonObject()
+                            .put("error", "Database error")
+                            .encode());
+                    ws.close();
+                });
+    }
+
+    private void handleSpinWheel(ServerWebSocket ws) {
+        String user_id = wsToUserId.get(ws);
+
+        if (user_id == null) {
+            ws.writeTextMessage(new JsonObject()
+                    .put("error", "User id is null")
+                    .encode());
+            return;
+        }
+
+        System.out.println("📥 Запрос на прокрутку колеса: " + user_id);
+
+        pool.preparedQuery(
+                "SELECT genre FROM genres WHERE type IN (SELECT current_rotation_type FROM rooms WHERE name IN (SELECT room FROM users WHERE user_id = $1)) ORDER BY RANDOM() LIMIT 1;")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    Row row = rows.iterator().next();
+
+                    JsonObject genre = new JsonObject()
+                            .put("type", "spinning_result")
+                            .put("genre", row.getString("genre"));
+
+                    pool.preparedQuery(
+                            "CALL public.set_genre($1, $2);")
+                            .execute(Tuple.of(user_id, row.getString("genre"))).onFailure(err -> {
+                                System.err.println("❌ Ошибка БД: " + err.getMessage());
+                                ws.writeTextMessage(new JsonObject()
+                                        .put("error", "Database error")
+                                        .encode());
+                                ws.close();
+                            });
+
+                    sendToUser(user_id, genre);
                 })
                 .onFailure(err -> {
 
