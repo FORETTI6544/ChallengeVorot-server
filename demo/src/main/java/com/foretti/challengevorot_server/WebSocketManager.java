@@ -8,6 +8,8 @@ import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.sqlclient.Pool;
 import io.vertx.sqlclient.Row;
+import io.vertx.sqlclient.RowSet;
+import io.vertx.core.Future;
 import io.vertx.pgclient.PgConnection;
 import io.vertx.pgclient.PgNotification;
 import io.vertx.sqlclient.Tuple;
@@ -139,6 +141,12 @@ public class WebSocketManager {
             case "spin_wheel":
                 handleSpinWheel(ws);
                 break;
+            case "get_chat":
+                handleGetChat(ws);
+                break;
+            case "send_message":
+                handleSendMessage(ws, json);
+                break;
             default:
                 ws.writeTextMessage(new JsonObject()
                         .put("error", "Unknown message type: " + type)
@@ -217,6 +225,7 @@ public class WebSocketManager {
 
                     JsonObject user = new JsonObject()
                             .put("type", "user_update")
+                            .put("user_id", user_id)
                             .put("username", row.getString("username"))
                             .put("avatar", row.getString("avatar"))
                             .put("balance", row.getInteger("balance"))
@@ -503,6 +512,129 @@ public class WebSocketManager {
 
                 });
 
+    }
+
+    private void handleGetChat(ServerWebSocket ws) {
+        String user_id = wsToUserId.get(ws);
+        System.out.println("📥 Запрос чата от: " + user_id);
+
+        JsonArray chat_users = new JsonArray();
+        JsonArray messages = new JsonArray();
+        JsonObject lastReadMessageObj = new JsonObject();
+
+        // 1. Создаем три асинхронных запроса (Future)
+        Future<RowSet<Row>> queryUsers = pool.preparedQuery(
+                "SELECT user_id, username, avatar" +
+                        " FROM users WHERE user_id IN (SELECT user_id" +
+                        " FROM messages WHERE room_name IN (SELECT room FROM users WHERE user_id = $1)" +
+                        " ORDER BY created_at DESC LIMIT 50);")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    for (Row row : rows) {
+                        JsonObject user = new JsonObject()
+                                .put("user_id", row.getString("user_id"))
+                                .put("username", row.getString("username"))
+                                .put("avatar", row.getString("avatar"));
+                        chat_users.add(user);
+                    }
+                });
+
+        Future<RowSet<Row>> queryMessages = pool.preparedQuery(
+                "SELECT id, user_id, room_name, type, content, attachment_base64, created_at" +
+                        " FROM messages WHERE room_name IN (SELECT room FROM users WHERE user_id = $1)" +
+                        " ORDER BY created_at ASC LIMIT 50;")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    for (Row row : rows) {
+                        JsonObject message = new JsonObject()
+                                .put("id", row.getInteger("id"))
+                                .put("room_name", row.getString("room_name"))
+                                .put("user_id", row.getString("user_id"))
+                                .put("type", row.getString("type"))
+                                .put("content", row.getString("content"))
+                                .put("attachment_base64", row.getString("attachment_base64"))
+                                .put("created_at", row.getOffsetDateTime("created_at").toString());
+                        messages.add(message);
+                    }
+                });
+
+        Future<RowSet<Row>> queryStatus = pool.preparedQuery(
+                "SELECT last_read_message_id FROM chat_read_status" +
+                        " WHERE room_name IN (SELECT room FROM users WHERE user_id = $1) AND user_id = $1")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    if (rows.iterator().hasNext()) { // Проверка на случай, если записи нет
+                        Row row = rows.iterator().next();
+                        lastReadMessageObj.put("last_read_message_id", row.getInteger("last_read_message_id"));
+                    }
+                });
+
+        // 2. Ждем выполнения ВСЕХ трех запросов
+        Future.all(queryUsers, queryMessages, queryStatus)
+                .onSuccess(compositeResult -> {
+                    // 3. Формируем единый финальный JSON-ответ
+                    JsonObject response = new JsonObject()
+                            .put("type", "chat_history")
+                            .put("users", chat_users)
+                            .put("messages", messages)
+                            .put("last_read_message_id", lastReadMessageObj.getInteger("last_read_message_id", 0));
+
+                    // 4. ОТПРАВЛЯЕМ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЮ ЗДЕСЬ
+                    sendToUser(user_id, response);
+                })
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка при получении данных чата: " + err.getMessage());
+                    // Можно отправить пользователю сообщение об ошибке
+                    ws.writeTextMessage(new JsonObject().put("error", "Failed to fetch chat data").encode());
+                });
+    }
+
+    private void handleSendMessage(ServerWebSocket ws, JsonObject json) {
+        String user_id = wsToUserId.get(ws);
+
+        JsonObject message = json.getJsonObject("message");
+        String type = message.getString("type");
+        String content = message.getString("content");
+        String attachment_base64 = message.getString("attachment_base64");
+
+        pool.preparedQuery(
+                "INSERT INTO messages (room_name, user_id, type, content, attachment_base64)" +
+                        " VALUES ((SELECT room FROM users WHERE user_id = $1), $1, $2, $3, $4)" +
+                        " RETURNING id, room_name, created_at")
+                .execute(Tuple.of(user_id, type, content, attachment_base64))
+                .onSuccess(rows -> {
+                    Row row = rows.iterator().next();
+                    Long id = row.getLong("id");
+                    String room_name = row.getString("room_name");
+                    String created_at = row.getOffsetDateTime("created_at").toString();
+
+                    message.put("id", id)
+                            .put("room_name", room_name)
+                            .put("user_id", user_id)
+                            .put("created_at", created_at);
+
+                    JsonObject notify = new JsonObject()
+                            .put("type", "new_message")
+                            .put("message", message);
+
+                    pool.preparedQuery(
+                            "SELECT unnest(users) AS user_id FROM rooms WHERE name = $1")
+                            .execute(Tuple.of(room_name))
+                            .onSuccess(rows_2 -> {
+                                for (Row row_2 : rows_2) {
+                                    sendToUser(row_2.getString("user_id"), notify);
+                                }
+                            }).onFailure(err -> {
+                                System.err.println("❌ Ошибка бд: " + err.getMessage());
+                                ws.writeTextMessage(
+                                        new JsonObject().put("error", "Failed to fetch chat data").encode());
+                            });
+                })
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка при отправки сообщения: " + err.getMessage());
+                    // Можно отправить пользователю сообщение об ошибке
+                    ws.writeTextMessage(new JsonObject().put("error", "Failed to fetch chat data").encode());
+                });
     }
 
     public void sendToUser(String userId, JsonObject message) {
