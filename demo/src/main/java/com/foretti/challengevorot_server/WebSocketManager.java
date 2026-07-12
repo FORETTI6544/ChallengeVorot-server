@@ -1,6 +1,8 @@
 package com.foretti.challengevorot_server;
 
 import java.util.Map;
+import java.util.List;
+import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 
 import io.vertx.core.http.ServerWebSocket;
@@ -92,7 +94,6 @@ public class WebSocketManager {
 
         } catch (Exception e) {
             System.err.println("❌ Ошибка обработки уведомления: " + e.getMessage());
-            e.printStackTrace();
         }
     }
 
@@ -100,7 +101,10 @@ public class WebSocketManager {
         String type = notificationJson.getString("type");
         switch (type) {
             case "user_update":
-                handleGetUser(sessions.get(notificationJson.getString("user_id")));
+                if (sessions.get(notificationJson.getString("user_id")) != null) {
+                    handleGetUser(sessions.get(notificationJson.getString("user_id")));
+                }
+                handleRoomUserUpdate(notificationJson.getString("user_id"));
                 break;
 
         }
@@ -146,6 +150,9 @@ public class WebSocketManager {
                 break;
             case "send_message":
                 handleSendMessage(ws, json);
+                break;
+            case "set_readiness":
+                handleSetReadiness(ws, json);
                 break;
             default:
                 ws.writeTextMessage(new JsonObject()
@@ -245,6 +252,42 @@ public class WebSocketManager {
 
                 });
 
+    }
+
+    private void handleRoomUserUpdate(String user_id) {
+        pool.preparedQuery(
+                "SELECT username, avatar, genre, game, game_status, ask_to, readiness" +
+                        " FROM users WHERE user_id = $1")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    Row row = rows.iterator().next();
+                    System.out.println(row);
+
+                    JsonObject user = new JsonObject();
+                    user.put("user_id", user_id)
+                            .put("username", row.getString("username"))
+                            .put("avatar", row.getString("avatar"))
+                            .put("genre", row.getString("genre"))
+                            .put("game", row.getString("game"))
+                            .put("game_status", row.getString("game_status"))
+                            .put("ask_to", row.getString("ask_to"))
+                            .put("readiness", row.getBoolean("readiness"));
+                    JsonObject message = new JsonObject();
+
+                    message.put("type", "room_user_update")
+                            .put("user", user);
+                    pool.preparedQuery(
+                            "SELECT users FROM rooms WHERE name IN (SELECT room FROM users" +
+                                    " WHERE user_id = $1)")
+                            .execute(Tuple.of(user_id))
+                            .onSuccess(rows_2 -> {
+                                Row row_2 = rows_2.iterator().next();
+                                List<String> usersList = Arrays.asList(row_2.getArrayOfStrings("users"));
+                                for (String user_id_for_message : usersList) {
+                                    sendToUser(user_id_for_message, message);
+                                }
+                            });
+                });
     }
 
     private void handleGetRooms(ServerWebSocket ws) {
@@ -527,7 +570,7 @@ public class WebSocketManager {
                 "SELECT user_id, username, avatar" +
                         " FROM users WHERE user_id IN (SELECT user_id" +
                         " FROM messages WHERE room_name IN (SELECT room FROM users WHERE user_id = $1)" +
-                        " ORDER BY created_at DESC LIMIT 50);")
+                        " ORDER BY created_at ASC LIMIT 50);")
                 .execute(Tuple.of(user_id))
                 .onSuccess(rows -> {
                     for (Row row : rows) {
@@ -540,9 +583,9 @@ public class WebSocketManager {
                 });
 
         Future<RowSet<Row>> queryMessages = pool.preparedQuery(
-                "SELECT id, user_id, room_name, type, content, attachment_base64, created_at" +
+                "SELECT * FROM (SELECT id, user_id, room_name, type, content, attachment_base64, created_at" +
                         " FROM messages WHERE room_name IN (SELECT room FROM users WHERE user_id = $1)" +
-                        " ORDER BY created_at ASC LIMIT 50;")
+                        " ORDER BY created_at DESC LIMIT 50) ORDER BY created_at ASC;")
                 .execute(Tuple.of(user_id))
                 .onSuccess(rows -> {
                     for (Row row : rows) {
@@ -635,6 +678,21 @@ public class WebSocketManager {
                     // Можно отправить пользователю сообщение об ошибке
                     ws.writeTextMessage(new JsonObject().put("error", "Failed to fetch chat data").encode());
                 });
+    }
+
+    private void handleSetReadiness(ServerWebSocket ws, JsonObject json) {
+        String user_id = wsToUserId.get(ws);
+        System.out.println("📥 Изменение готовности у: " + user_id);
+
+        pool.preparedQuery(
+                "UPDATE users SET readiness = $2 WHERE user_id = $1")
+                .execute(Tuple.of(user_id, json.getBoolean("readiness")))
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка бд: " + err.getMessage());
+                    ws.writeTextMessage(
+                            new JsonObject().put("error", "Failed to fetch chat data").encode());
+                });
+
     }
 
     public void sendToUser(String userId, JsonObject message) {
