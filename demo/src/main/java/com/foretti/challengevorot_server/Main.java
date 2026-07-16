@@ -53,11 +53,7 @@ public class Main {
 
         server.listen(8888, res -> {
             if (res.succeeded()) {
-                System.out.println("🌐 Сервер запущен на http://192.168.0.106:8888");
-                System.out.println("🔗 WebSocket: ws://192.168.0.106:8888");
-                System.out.println("📝 REST API:");
-                System.out.println("  POST /posts/register");
-                System.out.println("  POST /posts/login");
+                System.out.println("🌐 Сервер запущен");
             } else {
                 System.err.println("❌ Ошибка: " + res.cause().getMessage());
             }

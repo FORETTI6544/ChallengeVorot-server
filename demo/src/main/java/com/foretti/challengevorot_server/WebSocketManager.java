@@ -154,6 +154,15 @@ public class WebSocketManager {
             case "set_readiness":
                 handleSetReadiness(ws, json);
                 break;
+            case "ask_game":
+                handleAskGame(ws, json);
+                break;
+            case "get_reviews":
+                handleGetReviews(ws);
+                break;
+            case "make_review":
+                handleMakeReview(ws, json);
+                break;
             default:
                 ws.writeTextMessage(new JsonObject()
                         .put("error", "Unknown message type: " + type)
@@ -675,8 +684,6 @@ public class WebSocketManager {
                 })
                 .onFailure(err -> {
                     System.err.println("❌ Ошибка при отправки сообщения: " + err.getMessage());
-                    // Можно отправить пользователю сообщение об ошибке
-                    ws.writeTextMessage(new JsonObject().put("error", "Failed to fetch chat data").encode());
                 });
     }
 
@@ -691,6 +698,95 @@ public class WebSocketManager {
                     System.err.println("❌ Ошибка бд: " + err.getMessage());
                     ws.writeTextMessage(
                             new JsonObject().put("error", "Failed to fetch chat data").encode());
+                });
+
+    }
+
+    private void handleAskGame(ServerWebSocket ws, JsonObject json) {
+
+        String ask_to = json.getString("ask_to");
+        String game = json.getString("game");
+        String game_cover = json.getString("game_cover");
+
+        pool.preparedQuery(
+                "UPDATE users SET game = $2, game_cover = $3, game_status = 'playing'" +
+                        " WHERE user_id = $1")
+                .execute(Tuple.of(ask_to, game, game_cover))
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка бд: " + err.getMessage());
+                });
+    }
+
+    private void handleGetReviews(ServerWebSocket ws) {
+        String user_id = wsToUserId.get(ws);
+        JsonArray reviews_users = new JsonArray();
+        JsonArray reviews = new JsonArray();
+        System.out.println("📥 Запрос отзывов от: " + user_id);
+
+        Future<RowSet<Row>> queryUsers = pool.preparedQuery(
+                "SELECT user_id, username, avatar" +
+                        " FROM users WHERE user_id IN (SELECT user_id" +
+                        " FROM reviews WHERE room IN (SELECT room FROM users WHERE user_id = $1)" +
+                        " ORDER BY date ASC LIMIT 50);")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    for (Row row : rows) {
+                        JsonObject user = new JsonObject()
+                                .put("user_id", row.getString("user_id"))
+                                .put("username", row.getString("username"))
+                                .put("avatar", row.getString("avatar"));
+                        reviews_users.add(user);
+                    }
+                });
+
+        Future<RowSet<Row>> queryReviews = pool.preparedQuery(
+                "SELECT * FROM (SELECT id, user_id, game, game_cover, rating, review_text, date" +
+                        " FROM reviews WHERE room IN (SELECT room FROM users WHERE user_id = $1)" +
+                        " ORDER BY date DESC LIMIT 50) ORDER BY date ASC;")
+                .execute(Tuple.of(user_id))
+                .onSuccess(rows -> {
+                    for (Row row : rows) {
+                        JsonObject review = new JsonObject()
+                                .put("id", row.getInteger("id"))
+                                .put("user_id", row.getString("user_id"))
+                                .put("game", row.getString("game"))
+                                .put("game_cover", row.getString("game_cover"))
+                                .put("rating", row.getInteger("rating"))
+                                .put("review_text", row.getString("review_text"))
+                                .put("date", row.getOffsetDateTime("date").toString());
+                        reviews.add(review);
+                    }
+                });
+        Future.all(queryUsers, queryReviews)
+                .onSuccess(compositeResult -> {
+
+                    JsonObject response = new JsonObject()
+                            .put("type", "reviews_list")
+                            .put("users", reviews_users)
+                            .put("reviews", reviews);
+
+                    sendToUser(user_id, response);
+                })
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка бд: " + err.getMessage());
+                });
+    }
+
+    private void handleMakeReview(ServerWebSocket ws, JsonObject json) {
+        String user_id = wsToUserId.get(ws);
+        Integer rating = json.getInteger("rating");
+        String review_text = json.getString("text");
+
+        pool.preparedQuery(
+                "INSERT INTO reviews (user_id, game, game_cover, rating, review_text, room)" +
+                        " VALUES ($1, (SELECT game FROM users WHERE user_id = $1)," +
+                        " (SELECT game_cover FROM users WHERE user_id = $1), $2, $3," +
+                        " (SELECT room FROM users WHERE user_id = $1))")
+                .execute(Tuple.of(user_id, rating, review_text))
+                .onSuccess(rows -> {
+                    pool.preparedQuery(
+                            "UPDATE users SET game_status = 'done', WHERE user_id = $1")
+                            .execute(Tuple.of(user_id));
                 });
 
     }
