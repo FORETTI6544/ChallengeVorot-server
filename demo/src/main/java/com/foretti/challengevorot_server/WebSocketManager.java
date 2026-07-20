@@ -163,6 +163,9 @@ public class WebSocketManager {
             case "make_review":
                 handleMakeReview(ws, json);
                 break;
+            case "drop_game":
+                handleDropGame(ws);
+                break;
             default:
                 ws.writeTextMessage(new JsonObject()
                         .put("error", "Unknown message type: " + type)
@@ -740,9 +743,9 @@ public class WebSocketManager {
                 });
 
         Future<RowSet<Row>> queryReviews = pool.preparedQuery(
-                "SELECT * FROM (SELECT id, user_id, game, game_cover, rating, review_text, date" +
+                "SELECT id, user_id, game, game_cover, rating, review_text, date" +
                         " FROM reviews WHERE room IN (SELECT room FROM users WHERE user_id = $1)" +
-                        " ORDER BY date DESC LIMIT 50) ORDER BY date ASC;")
+                        " ORDER BY date DESC LIMIT 50")
                 .execute(Tuple.of(user_id))
                 .onSuccess(rows -> {
                     for (Row row : rows) {
@@ -778,17 +781,20 @@ public class WebSocketManager {
         String review_text = json.getString("text");
 
         pool.preparedQuery(
-                "INSERT INTO reviews (user_id, game, game_cover, rating, review_text, room)" +
-                        " VALUES ($1, (SELECT game FROM users WHERE user_id = $1)," +
-                        " (SELECT game_cover FROM users WHERE user_id = $1), $2, $3," +
-                        " (SELECT room FROM users WHERE user_id = $1))")
+                "CALL public.make_review($1, $2, $3)")
                 .execute(Tuple.of(user_id, rating, review_text))
-                .onSuccess(rows -> {
-                    pool.preparedQuery(
-                            "UPDATE users SET game_status = 'done', WHERE user_id = $1")
-                            .execute(Tuple.of(user_id));
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка бд: " + err.getMessage());
                 });
 
+    }
+
+    private void handleDropGame(ServerWebSocket ws) {
+        String user_id = wsToUserId.get(ws);
+        pool.preparedQuery("CALL public.drop_game($1)").execute(Tuple.of(user_id))
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка бд: " + err.getMessage());
+                });
     }
 
     public void sendToUser(String userId, JsonObject message) {
