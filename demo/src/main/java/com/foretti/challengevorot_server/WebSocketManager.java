@@ -2,6 +2,8 @@ package com.foretti.challengevorot_server;
 
 import java.util.Map;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -165,6 +167,12 @@ public class WebSocketManager {
                 break;
             case "drop_game":
                 handleDropGame(ws);
+                break;
+            case "create_room":
+                handleCreateRoom(ws, json);
+                break;
+            case "join_room":
+                handleJoinRoom(ws, json);
                 break;
             default:
                 ws.writeTextMessage(new JsonObject()
@@ -797,6 +805,72 @@ public class WebSocketManager {
                 });
     }
 
+    private void handleCreateRoom(ServerWebSocket ws, JsonObject json) {
+        String user_id = wsToUserId.get(ws);
+        String room_name = json.getString("name");
+        String password_hash = hashPassword(json.getString("password"));
+        String[] users = { user_id };
+        pool.preparedQuery(
+                "INSERT INTO rooms (name, password_hash, users)" +
+                        " VALUES ($1, $2, $3)")
+                .execute(Tuple.of(room_name, password_hash, users))
+                .onSuccess(rows -> {
+                    pool.preparedQuery(
+                            "UPDATE users SET room = $2 WHERE user_id = $1")
+                            .execute(Tuple.of(user_id, room_name))
+                            .onSuccess(rows_2 -> {
+                                JsonObject response = new JsonObject()
+                                        .put("type", "join_room");
+                                sendToUser(user_id, response);
+                            });
+                }).onFailure(err -> {
+                    System.err.println("❌ Ошибка бд: " + err.getMessage());
+                });
+    }
+
+    private void handleJoinRoom(ServerWebSocket ws, JsonObject json) {
+        String user_id = wsToUserId.get(ws);
+        String room_name = json.getString("name");
+        String password_hash = hashPassword(json.getString("password"));
+        pool.preparedQuery(
+                "SELECT users FROM rooms WHERE name = $1 AND password_hash = $2")
+                .execute(Tuple.of(room_name, password_hash))
+                .onSuccess(rows -> {
+                    if (rows.size() == 0) {
+                        JsonObject response = new JsonObject()
+                                        .put("error", "Invalid name or password");
+                                sendToUser(user_id, response);
+                        return;
+                    }
+
+                    Row row = rows.iterator().next();
+                    String[] users = row.getArrayOfStrings("users");
+                    String[] new_users = Arrays.copyOf(users, users.length + 1);
+                    new_users[new_users.length - 1] = user_id;
+
+                    Future<RowSet<Row>> queryRooms = pool.preparedQuery(
+                            "UPDATE rooms SET users = $2 WHERE name = $1")
+                            .execute(Tuple.of(room_name, (Object) new_users));
+                    Future<RowSet<Row>> queryUsers = pool.preparedQuery(
+                            "UPDATE users SET room = $2 WHERE user_id = $1")
+                            .execute(Tuple.of(user_id, room_name));
+
+                    Future.all(queryRooms, queryUsers)
+                            .onSuccess(compositeResult -> {
+
+                                JsonObject response = new JsonObject()
+                                        .put("type", "join_room");
+                                sendToUser(user_id, response);
+                            })
+                            .onFailure(err -> {
+                                System.err.println("❌ Ошибка бд: " + err.getMessage());
+                            });
+                })
+                .onFailure(err -> {
+                    System.err.println("❌ Ошибка бд: " + err.getMessage());
+                });
+    }
+
     public void sendToUser(String userId, JsonObject message) {
         ServerWebSocket ws = sessions.get(userId);
         if (ws != null) {
@@ -812,4 +886,18 @@ public class WebSocketManager {
         String encoded = message.encode();
         sessions.values().forEach(ws -> ws.writeTextMessage(encoded));
     }
+
+    private String hashPassword(String password) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(password.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : hash)
+                hex.append(String.format("%02x", b));
+            return hex.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("Hash error", e);
+        }
+    }
+
 }
